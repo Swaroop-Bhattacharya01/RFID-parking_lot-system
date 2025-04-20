@@ -104,11 +104,10 @@ License
 This project is open-source and available under the MIT License.
 
 Contact
-If you have any questions or suggestions, feel free to reach out to me via GitHub or email!
+If you have any questions or suggestions, feel free to reach out to me via GitHub 
 
 GitHub: Swaroop-Bhattacharya01
 
-Email: your-email@example.com
 
 Acknowledgments
 MFRC522 Library: Used for interfacing with the RFID reader.
