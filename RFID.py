@@ -63,6 +63,27 @@ class ParkingSystemGUI:
                            foreground=self.neon_blue)
         self.style.configure('TLabelframe.Label', background=self.bg_color, 
                            foreground=self.neon_blue)
+        self.style.configure('TEntry', 
+                           fieldbackground='#1a1a1a',
+                           foreground=self.neon_blue,
+                           insertcolor=self.neon_blue)
+        
+        # Initialize default users
+        self.default_users = [
+            {
+                "uid": "89 D3 9D 94",
+                "name": "Swaroop",
+                "role": "Admin"
+            },
+            {
+                "uid": "13 D3 09 27",
+                "name": "Tester",
+                "role": "User"
+            }
+        ]
+        
+        # Create a lookup dictionary for quick user info access
+        self.user_lookup = {user["uid"]: user for user in self.default_users}
         
         # Serial connection
         self.serial_port = None
@@ -98,8 +119,9 @@ class ParkingSystemGUI:
         # Initialize serial port list
         self.update_ports()
         
-        # Load saved users
+        # Load saved users and add default users if not present
         self.load_users()
+        self.add_default_users()
         
     def load_images(self):
         # Load and resize images
@@ -368,37 +390,166 @@ class ParkingSystemGUI:
         if "Card UID:" in data:
             self.log_message(data)
             self.current_uid = data.split(": ")[1].strip()
-        elif "Access Granted!" in data:
-            self.log_message(data)
-            self.update_parking_status(True)
-        elif "Welcome," in data:
-            # Extract name and role from welcome message
-            parts = data.split("Welcome, ")[1].split(" (")
-            if len(parts) == 2:
-                name = parts[0].strip()
-                role = parts[1].rstrip(")")
-                self.update_user_info(name, role)
-        elif "Access Denied!" in data:
-            self.log_message(data)
-            self.update_parking_status(False)
             
-    def update_parking_status(self, granted):
-        current_time = datetime.now().strftime("%H:%M:%S")
+            # First check if it's a default user
+            if self.current_uid in self.user_lookup:
+                user = self.user_lookup[self.current_uid]
+                self.log_message(f"Welcome, {user['name']} ({user['role']})")
+                self.current_user = user
+                self.handle_user_access()
+                return
+                
+            # Then check if it's in permitted users list
+            permitted_user = self.find_permitted_user(self.current_uid)
+            if permitted_user:
+                name, role = permitted_user
+                user = {
+                    "uid": self.current_uid,
+                    "name": name,
+                    "role": role
+                }
+                self.current_user = user
+                self.log_message(f"Welcome, {name} ({role})")
+                self.handle_user_access()
+                return
+                
+            # If not found anywhere, show add user dialog
+            self.show_add_user_dialog(self.current_uid)
+                
+    def find_permitted_user(self, uid):
+        # Search through permitted users list
+        for i in range(self.permitted_list.size()):
+            item = self.permitted_list.get(i)
+            if uid in item:
+                # Extract name and role from the item text
+                # Format is "UID - Name (Role)"
+                parts = item.split(" - ")
+                if len(parts) == 2:
+                    name_role = parts[1].strip()
+                    # Extract name and role from "Name (Role)"
+                    if "(" in name_role and ")" in name_role:
+                        name = name_role[:name_role.rfind("(")].strip()
+                        role = name_role[name_role.rfind("(")+1:name_role.rfind(")")].strip()
+                        return (name, role)
+        return None
+        
+    def handle_user_access(self):
+        # Check if user is already in a slot
         for slot in self.slots:
             status_label, time_label, user_info = slot
-            if status_label.cget("text") == "Available":
-                status_label.config(text="Occupied" if granted else "Denied",
-                                  foreground=self.neon_green if granted else self.neon_red)
+            if status_label.cget("text") == "Occupied":
+                # Extract UID from user info
+                user_text = user_info.cget("text")
+                if user_text and " - " in user_text:
+                    stored_uid = user_text.split(" - ")[0]
+                    if stored_uid == self.current_uid:
+                        # User is already in this slot, free it
+                        status_label.config(text="Available", foreground=self.neon_green)
+                        time_label.config(text="")
+                        user_info.config(text="")
+                        self.log_message(f"Slot freed for {self.current_user['name']}")
+                        return
+        
+        # If not in a slot, show slot selection
+        self.show_slot_selection()
+        
+    def show_slot_selection(self):
+        # Create a new window for slot selection
+        selection_window = tk.Toplevel(self.root)
+        selection_window.title("Select Parking Slot")
+        selection_window.geometry("300x400")
+        selection_window.configure(bg=self.bg_color)
+        
+        # Make window modal
+        selection_window.transient(self.root)
+        selection_window.grab_set()
+        
+        # Title
+        title_label = ttk.Label(selection_window, text="Available Parking Slots", 
+                              style='Header.TLabel')
+        title_label.pack(pady=10)
+        
+        # Create scrollable frame
+        scroll_frame = ttk.Frame(selection_window)
+        scroll_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Add canvas and scrollbar
+        canvas = tk.Canvas(scroll_frame, bg=self.bg_color)
+        scrollbar = ttk.Scrollbar(scroll_frame, orient="vertical", command=canvas.yview)
+        
+        # Create button frame
+        button_frame = ttk.Frame(canvas)
+        
+        # Configure scrolling
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Add button frame to canvas
+        canvas.create_window((0, 0), window=button_frame, anchor="nw")
+        
+        # Create buttons for available slots
+        for i, slot in enumerate(self.slots):
+            status_label, time_label, user_info = slot
+            status = status_label.cget("text")
+            if status == "Available" or status == "Denied":
+                btn = NeonButton(button_frame, text=f"Slot {i+1}", 
+                               command=lambda idx=i: self.select_slot(idx, selection_window))
+                btn.pack(pady=5)
+        
+        # Update scroll region
+        button_frame.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        
+        # Add mousewheel scrolling
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
+        
+        # Cleanup on window close
+        def on_closing():
+            canvas.unbind_all("<MouseWheel>")
+            selection_window.destroy()
+        selection_window.protocol("WM_DELETE_WINDOW", on_closing)
+            
+    def select_slot(self, slot_index, window):
+        # Update the selected slot
+        self.update_parking_status(True, slot_index)
+        # Close the selection window
+        window.destroy()
+            
+    def update_parking_status(self, granted, slot_index=None):
+        current_time = datetime.now().strftime("%H:%M:%S")
+        
+        if slot_index is not None and granted and hasattr(self, 'current_user'):
+            # Update specific slot with current user info
+            status_label, time_label, user_info = self.slots[slot_index]
+            current_status = status_label.cget("text")
+            if current_status == "Available" or current_status == "Denied":
+                status_label.config(text="Occupied", foreground=self.neon_green)
                 time_label.config(text=f"Since {current_time}")
-                if not granted:
+                # Use current_user info for consistent display
+                user_info.config(text=f"{self.current_uid} - {self.current_user['name']} ({self.current_user['role']})", 
+                               foreground=self.neon_blue)
+        else:
+            # Handle denied access
+            for slot in self.slots:
+                status_label, time_label, user_info = slot
+                current_status = status_label.cget("text")
+                if current_status == "Available" or current_status == "Denied":
+                    status_label.config(text="Denied",
+                                      foreground=self.neon_red)
+                    time_label.config(text=f"Since {current_time}")
                     user_info.config(text="")
-                break
+                    break
                 
     def update_user_info(self, name, role):
         for slot in self.slots:
             status_label, time_label, user_info = slot
             if status_label.cget("text") == "Occupied":
-                user_info.config(text=f"{name} ({role})", foreground=self.neon_blue)
+                # Update only the name and role part, keeping the UID
+                current_text = user_info.cget("text")
+                if " - " in current_text:
+                    uid = current_text.split(" - ")[0]
+                    user_info.config(text=f"{uid} - {name} ({role})", foreground=self.neon_blue)
                 break
                 
     def log_message(self, message):
@@ -474,6 +625,132 @@ class ParkingSystemGUI:
         self.denied_list.delete(0, tk.END)
         self.save_users()
         self.log_message("Cleared denied users list")
+
+    def add_default_users(self):
+        for user in self.default_users:
+            # Check if user already exists in the permitted list
+            user_exists = False
+            for i in range(self.permitted_list.size()):
+                if user["uid"] in self.permitted_list.get(i):
+                    user_exists = True
+                    break
+                    
+            if not user_exists:
+                # Add user to permitted users list
+                user_text = f"{user['name']} ({user['role']})"
+                self.permitted_list.insert(tk.END, user_text)
+                self.save_users()
+                self.log_message(f"Added default user: {user_text}")
+
+    def add_to_permitted_list(self, uid, name, role):
+        # Check if user already exists in the permitted list
+        for i in range(self.permitted_list.size()):
+            if uid in self.permitted_list.get(i):
+                return  # User already in list
+                
+        # Add to permitted list
+        user_text = f"{uid} - {name} ({role})"
+        self.permitted_list.insert(tk.END, user_text)
+        self.save_users()
+        self.log_message(f"Added to permitted users: {user_text}")
+        
+    def show_add_user_dialog(self, uid):
+        # Create dialog window
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add New User")
+        dialog.geometry("400x300")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Title
+        title_label = ttk.Label(dialog, text="Add New User", style='Header.TLabel')
+        title_label.pack(pady=10)
+        
+        # UID display
+        uid_frame = ttk.Frame(dialog)
+        uid_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Label(uid_frame, text="UID:").pack(side="left", padx=5)
+        ttk.Label(uid_frame, text=uid, foreground=self.neon_blue).pack(side="left")
+        
+        # Name input
+        name_frame = ttk.Frame(dialog)
+        name_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Label(name_frame, text="Name:").pack(side="left", padx=5)
+        name_entry = ttk.Entry(name_frame, style='TEntry')
+        name_entry.pack(side="left", fill="x", expand=True)
+        
+        # Role input
+        role_frame = ttk.Frame(dialog)
+        role_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Label(role_frame, text="Role:").pack(side="left", padx=5)
+        role_entry = ttk.Entry(role_frame, style='TEntry')
+        role_entry.pack(side="left", fill="x", expand=True)
+        
+        # User type selection
+        type_frame = ttk.Frame(dialog)
+        type_frame.pack(fill="x", padx=10, pady=10)
+        
+        user_type = tk.StringVar(value="permitted")  # Default to permitted
+        
+        type_label = ttk.Label(type_frame, text="User Type:", style='Status.TLabel')
+        type_label.pack(pady=5)
+        
+        # Radio buttons for user type
+        permitted_radio = ttk.Radiobutton(type_frame, text="Permitted User", 
+                                        variable=user_type, value="permitted")
+        permitted_radio.pack(pady=2)
+        
+        denied_radio = ttk.Radiobutton(type_frame, text="Denied User", 
+                                     variable=user_type, value="denied")
+        denied_radio.pack(pady=2)
+        
+        def save_user():
+            name = name_entry.get().strip()
+            role = role_entry.get().strip()
+            is_permitted = user_type.get() == "permitted"
+            
+            if name and role:
+                # Create user info
+                new_user = {
+                    "uid": uid,
+                    "name": name,
+                    "role": role
+                }
+                
+                if is_permitted:
+                    # Add to default users and lookup
+                    self.default_users.append(new_user)
+                    self.user_lookup[uid] = new_user
+                    
+                    # Add to permitted list
+                    self.add_to_permitted_list(uid, name, role)
+                    
+                    # Set as current user and show slot selection
+                    self.current_user = new_user
+                    dialog.destroy()
+                    self.show_slot_selection()
+                else:
+                    # Add to denied list
+                    user_text = f"{uid} - {name} ({role})"
+                    self.denied_list.insert(tk.END, user_text)
+                    self.save_users()
+                    self.log_message(f"Added to denied users: {user_text}")
+                    dialog.destroy()
+            else:
+                messagebox.showwarning("Input Error", "Please fill in all fields")
+        
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill="x", padx=10, pady=10)
+        
+        cancel_btn = NeonButton(button_frame, text="Cancel", 
+                              command=dialog.destroy)
+        cancel_btn.pack(side="right", padx=5)
+        
+        save_btn = NeonButton(button_frame, text="Save", 
+                             command=save_user)
+        save_btn.pack(side="right", padx=5)
 
 if __name__ == "__main__":
     root = tk.Tk()
